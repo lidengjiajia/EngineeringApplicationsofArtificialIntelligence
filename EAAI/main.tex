@@ -1,0 +1,392 @@
+%============================================================================
+% Landscape-Guided Federated Learning for Privacy-Preserving Credit Scoring
+% Submitted to: Engineering Applications of Artificial Intelligence
+%============================================================================
+\documentclass[preprint,12pt,authoryear]{elsarticle}
+
+\usepackage{amssymb,amsmath,amsthm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{multirow}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\newtheorem{definition}{Definition}
+
+\journal{Engineering Applications of Artificial Intelligence}
+
+\begin{document}
+
+\begin{frontmatter}
+
+\title{Landscape-Guided Federated Learning for Privacy-Preserving Credit Scoring: Leveraging Loss Surface Geometry to Address Data Heterogeneity}
+
+\begin{abstract}
+Federated learning enables privacy-preserving collaborative credit scoring across financial institutions, yet statistical heterogeneity arising from diverse customer populations substantially degrades model performance. This paper proposes FedLGO (Federated Landscape-Guided Optimization), a novel framework that leverages loss landscape geometry to guide federated optimization for credit risk assessment. The landscape-guided optimization module extracts gradient magnitude and Hessian trace from each institution's loss surface, enabling adaptive client selection and curvature-aware learning rate adjustment. The momentum-guided gradient correction mechanism maintains a global momentum buffer that aligns heterogeneous gradients toward consistent optimization directions without additional communication overhead. Experiments on UCI Credit Card Default and Xinwang Credit datasets across four heterogeneity scenarios demonstrate that FedLGO achieves 1.0--1.6 percentage point AUC improvements over nine baselines while maintaining communication efficiency identical to FedAvg. Ablation studies confirm that landscape-guided optimization proves effective under feature and quantity heterogeneity, while momentum correction excels under label distribution conflicts.
+\end{abstract}
+
+\begin{keyword}
+Federated learning \sep Credit scoring \sep Loss landscape \sep Gradient correction \sep Non-IID data
+\end{keyword}
+
+\end{frontmatter}
+
+%============================================================================
+% SECTION 1: Introduction
+%============================================================================
+\section{Introduction}
+\label{sec:intro}
+
+Credit scoring constitutes a fundamental component of modern financial infrastructure, enabling quantitative assessment of borrower creditworthiness to support lending decisions across banking institutions and consumer finance companies \citep{Thomas2017,Lessmann2015}. The proliferation of digital financial services has generated credit-related data distributed across numerous institutions, each maintaining proprietary customer information reflecting unique market segments and operational characteristics. This fragmented data landscape creates fundamental tension in credit risk modeling: while aggregating heterogeneous data sources could significantly enhance predictive quality, regulatory frameworks including the General Data Protection Regulation and China's Personal Information Protection Law impose stringent constraints on cross-institutional data sharing.
+
+Federated learning has emerged as a compelling paradigm for addressing this privacy-utility tradeoff, enabling collaborative model development through parameter exchange rather than raw data transmission \citep{McMahan2017,Yang2019}. Under the federated averaging protocol, participating institutions independently train local models on private datasets and periodically transmit updates to a central coordinator for aggregation. This architecture preserves data locality while leveraging distributed computational resources.
+
+However, practical deployment encounters substantial obstacles arising from data heterogeneity across participating institutions. Financial institutions naturally serve distinct customer demographics, operate in different geographical regions, and maintain divergent risk appetites. This heterogeneity manifests as feature distribution skew reflecting varying customer profiles, label distribution skew capturing differing default rates, and quantity skew representing substantial dataset size imbalances \citep{Zhao2018}. Such non-IID conditions cause local optimization trajectories to diverge substantially, degrading both convergence speed and final model quality.
+
+The research community has proposed numerous strategies to mitigate heterogeneity effects. FedProx introduces proximal regularization to constrain local model drift \citep{Li2020fedprox}, while SCAFFOLD employs variance reduction through control variates \citep{Karimireddy2020}. Personalized methods including FedRep and Ditto maintain client-specific components \citep{Collins2021,Li2021ditto}. While these approaches demonstrate varying effectiveness, they share a common limitation: treating the optimization landscape uniformly without considering geometric structure characterizing each client's local loss surface.
+
+Recent advances in deep learning optimization have established fundamental connections between loss landscape geometry and training dynamics. Visualization studies reveal that neural network loss landscapes exhibit characteristic structures whose navigation determines optimization behavior \citep{Li2018visualize}. Theoretical investigations establish that flat minima correlate with improved generalization \citep{Keskar2017,Hochreiter1997}. These insights suggest that loss landscape characteristics provide valuable signals for algorithm design---yet this geometric perspective remains largely unexplored in federated learning.
+
+This paper introduces FedLGO (Federated Landscape-Guided Optimization), a framework that explicitly leverages loss landscape geometry to guide federated credit scoring optimization. The framework comprises two complementary mechanisms: a landscape-guided optimization module that extracts gradient magnitude (steepness) and Hessian trace (flatness) to enable adaptive client selection and learning rate adjustment; and a momentum-guided gradient correction mechanism that maintains a global momentum buffer aligning heterogeneous gradients toward consistent optimization directions.
+
+The primary contributions include: (1) introducing loss landscape analysis as a novel lens for federated credit scoring optimization; (2) developing momentum-guided gradient correction that mitigates directional conflicts with minimal communication overhead; (3) presenting comprehensive evaluation on two real-world credit datasets across four heterogeneity scenarios; and (4) providing ablation studies demonstrating complementary contributions of both mechanisms.
+
+%============================================================================
+% SECTION 2: Related Work
+%============================================================================
+\section{Related Work}
+\label{sec:related}
+
+\subsection{Federated Learning for Financial Applications}
+
+Federated learning enables collaborative model training while preserving data privacy, with FedAvg aggregating locally trained parameters through weighted averaging \citep{McMahan2017}. The paradigm has attracted substantial interest in financial services given applicability to privacy-sensitive domains including credit risk assessment and fraud detection \citep{Long2020,Yang2019}. However, the assumption of identically distributed data rarely holds in practical deployments where institutions serve distinct market segments \citep{Zhao2018,Li2020survey}.
+
+FedProx addresses client drift by augmenting local objectives with proximal regularization \citep{Li2020fedprox}. SCAFFOLD introduces variance reduction through control variates maintained at both server and client levels \citep{Karimireddy2020}. MOON leverages contrastive learning to encourage consistent representations \citep{Li2021moon}. Personalized methods acknowledge that a single global model may inadequately serve diverse contexts. FedRep separates shared feature extraction from personalized classification heads \citep{Collins2021}. Ditto formulates personalization as multi-task learning with global regularization \citep{Li2021ditto}. Per-FedAvg applies meta-learning principles for rapid fine-tuning \citep{Fallah2020}.
+
+\subsection{Loss Landscape Analysis}
+
+The geometric properties of neural network loss landscapes have emerged as a central research topic. Early work established connections between local minima flatness and generalization performance \citep{Hochreiter1997}. Visualization techniques enable direct examination of landscape structure by projecting high-dimensional spaces onto interpretable surfaces \citep{Li2018visualize}. Keskar et al. demonstrated that large-batch training tends to converge to sharper minima with degraded generalization \citep{Keskar2017}. Sharpness-aware minimization operationalizes this connection by formulating optimization as a min-max problem \citep{Foret2021}. Second-order methods approximate curvature information for learning rate adaptation \citep{Martens2015}. The connection between landscape geometry and federated optimization remains underexplored.
+
+\subsection{Gradient Correction in Federated Learning}
+
+Gradient-based variance reduction techniques have proven effective for mitigating heterogeneity. SCAFFOLD achieves favorable convergence but requires transmitting control variates alongside updates, doubling communication volume \citep{Karimireddy2020}. FedDyn introduces dynamic regularization adapting based on gradient history \citep{Acar2021}. FedNova addresses objective inconsistency from varying local steps \citep{Wang2020fednova}. Server-side momentum applies classical acceleration to aggregated updates \citep{Reddi2021}. FedLGO's gradient correction differs by maintaining a single global momentum buffer applied before aggregation, directly addressing conflicts while preserving communication efficiency.
+
+%============================================================================
+% SECTION 3: Methodology
+%============================================================================
+\section{FedLGO: Federated Landscape-Guided Optimization}
+\label{sec:method}
+
+\subsection{Problem Formulation}
+
+We consider federated credit scoring with $K$ financial institutions, each maintaining local dataset $\mathcal{D}_k = \{(\mathbf{x}_i^k, y_i^k)\}_{i=1}^{n_k}$ where $\mathbf{x}_i^k \in \mathbb{R}^d$ represents borrower features and $y_i^k \in \{0, 1\}$ indicates default status. The optimization objective seeks parameters $\theta$ minimizing:
+\begin{equation}
+    \min_\theta F(\theta) = \sum_{k=1}^{K} p_k F_k(\theta), \quad F_k(\theta) = \frac{1}{n_k}\sum_{i=1}^{n_k} \ell(\theta; \mathbf{x}_i^k, y_i^k),
+\end{equation}
+where $p_k = n_k / \sum_{j} n_j$ represents data proportion weight and $\ell$ is binary cross-entropy loss.
+
+\subsection{Landscape Feature Extraction}
+
+Drawing from loss landscape analysis \citep{Li2018visualize,Keskar2017}, we characterize each institution's loss surface through two quantitative features.
+
+\begin{definition}[Steepness]
+The steepness of institution $k$'s loss landscape at $\theta$ is the squared gradient magnitude:
+\begin{equation}
+    S_k(\theta) = \|\nabla F_k(\theta)\|^2.
+\end{equation}
+\end{definition}
+
+High steepness indicates substantial distance from stationary points, suggesting opportunities for significant improvement. Institutions with steeper landscapes typically possess customer segments underrepresented in the current global model.
+
+\begin{definition}[Flatness]
+The flatness is approximated by Hessian trace:
+\begin{equation}
+    \Phi_k(\theta) = \text{tr}(\nabla^2 F_k(\theta)) \approx \frac{1}{M}\sum_{m=1}^{M} \mathbf{v}_m^\top \nabla^2 F_k(\theta) \mathbf{v}_m,
+\end{equation}
+where $\{\mathbf{v}_m\}_{m=1}^M$ are Rademacher vectors enabling efficient estimation via Hutchinson's estimator \citep{Hutchinson1990}.
+\end{definition}
+
+Low flatness corresponds to broad regions where gradients provide reliable guidance. High flatness indicates sharp regions requiring conservative optimization.
+
+\subsection{Landscape-Guided Optimization}
+
+We leverage landscape features for two optimization decisions. For client selection, we define a composite score:
+\begin{equation}
+    \text{score}_k = \frac{S_k(\theta)}{1 + \Phi_k(\theta)},
+\end{equation}
+prioritizing institutions with high steepness combined with low flatness. Selection proceeds through temperature-controlled softmax:
+\begin{equation}
+    P(\text{select } k) = \frac{\exp(\text{score}_k / \tau)}{\sum_{j=1}^{K} \exp(\text{score}_j / \tau)},
+\end{equation}
+with temperature annealed from $\tau_{\max}$ toward $\tau_{\min}$ across training rounds.
+
+For learning rate adaptation, we modulate each institution's rate according to relative curvature:
+\begin{equation}
+    \eta_k = \eta_{\text{base}} \cdot \left(1 + \alpha \cdot \frac{\bar{\Phi} - \Phi_k}{\bar{\Phi} + \epsilon}\right),
+\end{equation}
+where $\bar{\Phi}$ is mean flatness among selected institutions. Institutions with flatter landscapes receive increased learning rates.
+
+\subsection{Momentum-Guided Gradient Correction}
+
+Data heterogeneity induces local gradients pointing in substantially different directions. We introduce a global momentum mechanism to align gradients. The server maintains buffer $\mathbf{m}_t$ updated each round:
+\begin{equation}
+    \mathbf{m}_t = \beta \mathbf{m}_{t-1} + (1 - \beta) \bar{\mathbf{g}}_t, \quad \bar{\mathbf{g}}_t = \sum_{k \in S_t} w_k \mathbf{g}_k^t,
+\end{equation}
+where $\beta$ is momentum coefficient. Each institution applies gradient correction:
+\begin{equation}
+    \tilde{\mathbf{g}}_k^t = (1-\gamma) \mathbf{g}_k^t + \gamma \mathbf{m}_{t-1},
+\end{equation}
+interpolating between original gradient and momentum direction.
+
+Corrected gradients are aggregated using landscape-weighted coefficients:
+\begin{equation}
+    w_k = \frac{p_k \cdot (1 + \delta \cdot \text{score}_k)}{\sum_{j \in S_t} p_j \cdot (1 + \delta \cdot \text{score}_j)}.
+\end{equation}
+
+Algorithm~\ref{alg:fedlgo} presents the complete procedure.
+
+\begin{algorithm}[!ht]
+\caption{FedLGO: Federated Landscape-Guided Optimization}
+\label{alg:fedlgo}
+\begin{algorithmic}[1]
+\REQUIRE Institutions $\{1, \ldots, K\}$, rounds $T$, local epochs $E$
+\STATE Initialize $\theta_0$, momentum $\mathbf{m}_0 = \mathbf{0}$
+\FOR{$t = 0, 1, \ldots, T-1$}
+    \STATE Compute steepness $S_k$, flatness $\Phi_k$, score for each $k$
+    \STATE Sample institutions $S_t$ via temperature-annealed softmax
+    \STATE Broadcast $\theta_t$, $\mathbf{m}_{t-1}$ to selected institutions
+    \FOR{each $k \in S_t$ \textbf{in parallel}}
+        \STATE Set adaptive learning rate $\eta_k$
+        \STATE Perform $E$ local epochs: $\theta_k \leftarrow \text{LocalTrain}(\theta_t, \mathcal{D}_k)$
+        \STATE Compute gradient: $\mathbf{g}_k^t \leftarrow \theta_t - \theta_k$
+        \STATE Apply correction: $\tilde{\mathbf{g}}_k^t \leftarrow (1-\gamma)\mathbf{g}_k^t + \gamma \mathbf{m}_{t-1}$
+    \ENDFOR
+    \STATE Compute weights $w_k$, aggregate: $\bar{\mathbf{g}}_t \leftarrow \sum_{k \in S_t} w_k \tilde{\mathbf{g}}_k^t$
+    \STATE Update momentum: $\mathbf{m}_t \leftarrow \beta \mathbf{m}_{t-1} + (1 - \beta) \bar{\mathbf{g}}_t$
+    \STATE Update model: $\theta_{t+1} \leftarrow \theta_t - \eta_g (\bar{\mathbf{g}}_t + \lambda \mathbf{m}_t)$
+\ENDFOR
+\end{algorithmic}
+\end{algorithm}
+
+%============================================================================
+% SECTION 4: Experiments
+%============================================================================
+\section{Experiments}
+\label{sec:experiments}
+
+\subsection{Experimental Setup}
+
+Experimental evaluation employs two real-world credit scoring datasets. The UCI Credit Card Default dataset \citep{Yeh2009} contains payment and demographic information from 30,000 credit card holders at a Taiwanese commercial bank, with 23 predictive features and 22.1\% default rate. The Xinwang Credit dataset originates from a Chinese digital-only bank operating in consumer finance, containing over 50,000 borrower records with 38 features and 18.3\% default rate following standard preprocessing. Both datasets undergo standardization before training, with each partitioned across $K=10$ simulated institutional clients.
+
+To systematically evaluate algorithmic robustness, we construct four heterogeneity scenarios reflecting realistic cross-institutional variations. The IID baseline randomly shuffles and uniformly distributes samples across institutions. Feature skew sorts samples by key demographic attributes with each institution receiving a contiguous segment, simulating demographic-specialized institutions. Label skew creates varying default rates through stratified sampling, ranging from 10\% to 40\% across clients. Quantity skew employs power-law allocation where the largest institution receives approximately ten times more samples than the smallest.
+
+We evaluate FedLGO against nine federated learning algorithms: FedAvg \citep{McMahan2017}, FedProx \citep{Li2020fedprox}, SCAFFOLD \citep{Karimireddy2020}, MOON \citep{Li2021moon}, FedGen \citep{Zhu2021}, FedProto \citep{Tan2022}, FedRep \citep{Collins2021}, Ditto \citep{Li2021ditto}, and Per-FedAvg \citep{Fallah2020}. All methods employ identical three-layer MLP architectures with hidden dimensions [128, 64, 32], ReLU activations, batch normalization, and dropout. Training proceeds for 100 communication rounds with 5 local epochs per round and batch size 64. FedLGO hyperparameters are: $\beta=0.9$, $\gamma=0.5$, $\lambda=0.1$, $\alpha=0.3$, $\delta=0.2$, $\tau_{\max}=2.0$, $\tau_{\min}=0.5$, $M=10$. All experiments are repeated with five random seeds, reporting mean and standard deviation. The primary metric is AUC, the standard discriminative measure for credit scoring.
+
+\subsection{Main Results}
+
+Tables~\ref{tab:uci_results} and~\ref{tab:xinwang_results} present experimental results across both datasets and all heterogeneity scenarios.
+
+\begin{table*}[!ht]
+\centering
+\caption{Performance comparison on UCI Credit Card Default dataset (AUC \%). Best in \textbf{bold}; second-best \underline{underlined}.}
+\label{tab:uci_results}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Method} & \textbf{IID} & \textbf{Feature Skew} & \textbf{Label Skew} & \textbf{Quantity Skew} \\
+\midrule
+FedAvg & $77.82 \pm 0.31$ & $74.15 \pm 0.68$ & $72.34 \pm 0.89$ & $75.21 \pm 0.52$ \\
+FedProx & $77.95 \pm 0.28$ & $74.63 \pm 0.71$ & $73.18 \pm 0.76$ & $75.89 \pm 0.48$ \\
+SCAFFOLD & $78.21 \pm 0.35$ & $75.42 \pm 0.59$ & $74.56 \pm 0.65$ & $76.33 \pm 0.44$ \\
+MOON & $78.15 \pm 0.29$ & $75.18 \pm 0.63$ & $74.21 \pm 0.71$ & $76.08 \pm 0.51$ \\
+FedGen & $77.68 \pm 0.42$ & $74.89 \pm 0.74$ & $73.45 \pm 0.82$ & $75.56 \pm 0.58$ \\
+FedProto & $77.45 \pm 0.38$ & $74.32 \pm 0.69$ & $73.67 \pm 0.77$ & $75.12 \pm 0.55$ \\
+FedRep & \underline{$78.34 \pm 0.33$} & $75.21 \pm 0.61$ & $74.12 \pm 0.73$ & $76.15 \pm 0.49$ \\
+Ditto & $78.28 \pm 0.30$ & \underline{$75.56 \pm 0.58$} & \underline{$74.78 \pm 0.68$} & \underline{$76.45 \pm 0.46$} \\
+Per-FedAvg & $78.12 \pm 0.36$ & $75.08 \pm 0.65$ & $74.35 \pm 0.72$ & $76.02 \pm 0.53$ \\
+\midrule
+\textbf{FedLGO} & $\mathbf{78.89 \pm 0.26}$ & $\mathbf{76.72 \pm 0.48}$ & $\mathbf{75.93 \pm 0.54}$ & $\mathbf{77.58 \pm 0.41}$ \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+\begin{table*}[!ht]
+\centering
+\caption{Performance comparison on Xinwang Credit dataset (AUC \%). Best in \textbf{bold}; second-best \underline{underlined}.}
+\label{tab:xinwang_results}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Method} & \textbf{IID} & \textbf{Feature Skew} & \textbf{Label Skew} & \textbf{Quantity Skew} \\
+\midrule
+FedAvg & $75.43 \pm 0.45$ & $71.28 \pm 0.82$ & $69.56 \pm 1.05$ & $72.89 \pm 0.67$ \\
+FedProx & $75.67 \pm 0.41$ & $71.85 \pm 0.76$ & $70.42 \pm 0.93$ & $73.35 \pm 0.62$ \\
+SCAFFOLD & $76.12 \pm 0.48$ & $72.67 \pm 0.71$ & $71.89 \pm 0.78$ & $74.21 \pm 0.58$ \\
+MOON & $75.98 \pm 0.43$ & $72.34 \pm 0.75$ & $71.23 \pm 0.86$ & $73.87 \pm 0.61$ \\
+FedGen & $75.21 \pm 0.52$ & $71.56 \pm 0.84$ & $70.18 \pm 0.98$ & $73.12 \pm 0.69$ \\
+FedProto & $75.08 \pm 0.49$ & $71.89 \pm 0.79$ & $70.67 \pm 0.91$ & $72.78 \pm 0.65$ \\
+FedRep & $76.23 \pm 0.44$ & $72.45 \pm 0.72$ & $71.34 \pm 0.84$ & $73.95 \pm 0.59$ \\
+Ditto & \underline{$76.45 \pm 0.40$} & \underline{$72.98 \pm 0.68$} & \underline{$72.15 \pm 0.75$} & \underline{$74.56 \pm 0.55$} \\
+Per-FedAvg & $76.18 \pm 0.46$ & $72.21 \pm 0.74$ & $71.56 \pm 0.82$ & $74.12 \pm 0.60$ \\
+\midrule
+\textbf{FedLGO} & $\mathbf{77.34 \pm 0.35}$ & $\mathbf{74.56 \pm 0.58}$ & $\mathbf{73.42 \pm 0.63}$ & $\mathbf{75.89 \pm 0.49}$ \\
+\bottomrule
+\end{tabular}
+\end{table*}
+
+Under IID conditions where heterogeneity is absent, most federated methods achieve comparable performance, with FedLGO obtaining modest improvements of 0.5--0.9 AUC points over the strongest baselines. The landscape-guided mechanisms provide marginal benefits when data distributions are already aligned.
+
+Performance differentiation becomes pronounced under heterogeneous partitions reflecting realistic multi-institutional scenarios. Under feature skew simulating demographic-specialized institutions, FedLGO achieves 1.16 and 1.58 percentage point improvements over the second-best method (Ditto) on UCI and Xinwang respectively. The landscape-guided client selection effectively identifies institutions whose customer segments are underrepresented in the current global model, while adaptive learning rates appropriately modulate optimization aggressiveness.
+
+Label skew presents the most challenging scenario, with conflicting gradient directions arising as some institutions push toward features predictive of high default rates while others emphasize low-risk patterns. FedLGO's momentum-guided gradient correction proves particularly valuable, achieving 1.15 and 1.27 percentage point improvements by aligning heterogeneous gradients toward consistent directions. This finding has practical significance for credit scoring consortiums where member institutions inherently maintain different risk profiles.
+
+Under quantity skew reflecting size imbalances common in financial collaborations, FedLGO demonstrates robust performance with 1.13 and 1.33 percentage point improvements. The landscape-weighted aggregation prevents dominant institutions from overwhelming contributions of smaller but potentially informative participants.
+
+\subsection{Ablation Study}
+
+To isolate contributions of individual components, we evaluate ablation variants: FedLGO (full framework), w/o LGO (removes landscape-guided optimization), w/o MGC (removes momentum-guided correction), and w/o Both (equivalent to FedAvg). Tables~\ref{tab:ablation_uci} and~\ref{tab:ablation_xinwang} present results.
+
+\begin{table}[!ht]
+\centering
+\caption{Ablation study on UCI Credit Card dataset (AUC \%).}
+\label{tab:ablation_uci}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Variant} & \textbf{IID} & \textbf{Feature} & \textbf{Label} & \textbf{Quantity} \\
+\midrule
+FedLGO (Full) & $\mathbf{78.89}$ & $\mathbf{76.72}$ & $\mathbf{75.93}$ & $\mathbf{77.58}$ \\
+w/o LGO & $78.41$ & $75.34$ & $75.12$ & $76.23$ \\
+w/o MGC & $78.52$ & $76.08$ & $74.67$ & $76.89$ \\
+w/o Both & $77.82$ & $74.15$ & $72.34$ & $75.21$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\begin{table}[!ht]
+\centering
+\caption{Ablation study on Xinwang Credit dataset (AUC \%).}
+\label{tab:ablation_xinwang}
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Variant} & \textbf{IID} & \textbf{Feature} & \textbf{Label} & \textbf{Quantity} \\
+\midrule
+FedLGO (Full) & $\mathbf{77.34}$ & $\mathbf{74.56}$ & $\mathbf{73.42}$ & $\mathbf{75.89}$ \\
+w/o LGO & $76.78$ & $72.89$ & $72.56$ & $74.12$ \\
+w/o MGC & $76.95$ & $73.67$ & $71.45$ & $74.78$ \\
+w/o Both & $75.43$ & $71.28$ & $69.56$ & $72.89$ \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The landscape-guided optimization module provides maximal benefit under feature skew (1.38 and 1.67 AUC improvement when added to w/o LGO baseline on UCI and Xinwang) and quantity skew (1.35 and 1.77 improvement). Under these conditions, institutions exhibit substantially different gradient magnitudes and curvature characteristics; adaptive client selection and learning rate adjustment effectively leverage this geometric diversity.
+
+The momentum-guided gradient correction module proves most valuable under label skew (1.26 and 1.97 AUC improvement when added to w/o MGC baseline). When institutions have conflicting default rate patterns, gradient directions diverge substantially; the momentum correction mechanism aligns these toward consistent global optimization directions.
+
+The full FedLGO framework consistently outperforms either partial variant, confirming that LGO and MGC address complementary aspects of the heterogeneity challenge in federated credit scoring.
+
+\subsection{Sensitivity Analysis}
+
+We examine FedLGO's sensitivity to key hyperparameters on UCI under label skew. Varying gradient correction strength $\gamma \in \{0.0, 0.25, 0.5, 0.75, 1.0\}$ reveals that intermediate values around $\gamma = 0.5$ achieve optimal performance, balancing heterogeneity mitigation against preservation of institution-specific gradient information. Extreme values degrade performance by either ignoring correction entirely or completely overriding local gradients.
+
+Varying momentum coefficient $\beta \in \{0.7, 0.8, 0.9, 0.95\}$ reveals stable performance across this range, with $\beta = 0.9$ achieving slightly better results, aligning with standard momentum settings in deep learning. Performance remains stable for Hutchinson samples $M \geq 5$, with diminishing returns beyond $M = 10$.
+
+\subsection{Communication Efficiency}
+
+FedLGO maintains per-round communication volume identical to FedAvg, transmitting only model parameters without the control variate overhead that doubles SCAFFOLD's bandwidth requirements. For credit scoring models with approximately 15,000 parameters, per-round transmission is roughly 60KB per client versus SCAFFOLD's 120KB. Over 100 training rounds with 10 clients, FedLGO saves approximately 60MB total bandwidth---a meaningful consideration for financial institutions with stringent data governance policies.
+
+%============================================================================
+% SECTION 5: Conclusion
+%============================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+
+This paper introduced FedLGO, a federated learning framework that leverages loss landscape analysis to guide optimization under data heterogeneity in cross-institutional credit scoring. The proposed approach extracts gradient magnitude and Hessian trace from each institution's loss surface to inform adaptive client selection and learning rate adjustment. Momentum-guided gradient correction maintains a global buffer that aligns heterogeneous gradients toward consistent optimization directions.
+
+Experiments on UCI Credit Card Default and Xinwang Credit datasets across four heterogeneity scenarios demonstrated consistent performance improvements over nine established baselines. FedLGO achieved 1.0--1.6 percentage point AUC improvements under heterogeneous conditions while maintaining communication efficiency identical to FedAvg. Ablation studies confirmed that landscape-guided optimization proves effective under feature and quantity heterogeneity, while momentum correction excels in mitigating label distribution conflicts.
+
+Future directions include extending FedLGO to vertical federated learning scenarios, incorporating differential privacy guarantees, and exploring asynchronous communication protocols for larger financial consortiums.
+
+%============================================================================
+% References
+%============================================================================
+
+\begin{thebibliography}{99}
+
+\bibitem[Thomas(2000)]{Thomas2017}
+L.C. Thomas, A survey of credit and behavioural scoring: Forecasting financial risk of lending to consumers, International Journal of Forecasting 16 (2000) 149--172.
+
+\bibitem[Lessmann et al.(2015)]{Lessmann2015}
+S. Lessmann, B. Baesens, H.-V. Seow, L.C. Thomas, Benchmarking state-of-the-art classification algorithms for credit scoring: An update of research, European Journal of Operational Research 247 (2015) 124--136.
+
+\bibitem[McMahan et al.(2017)]{McMahan2017}
+B. McMahan, E. Moore, D. Ramage, S. Hampson, B.A.y. Arcas, Communication-efficient learning of deep networks from decentralized data, in: Proc. AISTATS, 2017, pp. 1273--1282.
+
+\bibitem[Yang et al.(2019)]{Yang2019}
+Q. Yang, Y. Liu, T. Chen, Y. Tong, Federated machine learning: Concept and applications, ACM Transactions on Intelligent Systems and Technology 10 (2019) 12:1--12:19.
+
+\bibitem[Zhao et al.(2018)]{Zhao2018}
+Y. Zhao, M. Li, L. Lai, N. Suda, D. Civin, V. Chandra, Federated learning with non-IID data, arXiv preprint arXiv:1806.00582, 2018.
+
+\bibitem[Li et al.(2020a)]{Li2020fedprox}
+T. Li, A.K. Sahu, M. Zaheer, M. Sanjabi, A. Talwalkar, V. Smith, Federated optimization in heterogeneous networks, in: Proc. MLSys, 2020.
+
+\bibitem[Karimireddy et al.(2020)]{Karimireddy2020}
+S.P. Karimireddy, S. Kale, M. Mohri, S. Reddi, S. Stich, A.T. Suresh, SCAFFOLD: Stochastic controlled averaging for federated learning, in: Proc. ICML, 2020, pp. 5132--5143.
+
+\bibitem[Collins et al.(2021)]{Collins2021}
+L. Collins, H. Hassani, A. Mokhtari, S. Shakkottai, Exploiting shared representations for personalized federated learning, in: Proc. ICML, 2021, pp. 2089--2099.
+
+\bibitem[Li et al.(2021a)]{Li2021ditto}
+T. Li, S. Hu, A. Beirami, V. Smith, Ditto: Fair and robust federated learning through personalization, in: Proc. ICML, 2021, pp. 6357--6368.
+
+\bibitem[Li et al.(2018)]{Li2018visualize}
+H. Li, Z. Xu, G. Taylor, C. Studer, T. Goldstein, Visualizing the loss landscape of neural nets, in: Proc. NeurIPS, 2018, pp. 6389--6399.
+
+\bibitem[Keskar et al.(2017)]{Keskar2017}
+N.S. Keskar, D. Mudigere, J. Nocedal, M. Smelyanskiy, P.T.P. Tang, On large-batch training for deep learning: Generalization gap and sharp minima, in: Proc. ICLR, 2017.
+
+\bibitem[Hochreiter and Schmidhuber(1997)]{Hochreiter1997}
+S. Hochreiter, J. Schmidhuber, Flat minima, Neural Computation 9 (1997) 1--42.
+
+\bibitem[Long et al.(2020)]{Long2020}
+G. Long, Y. Tan, J. Jiang, C. Zhang, Federated learning for open banking, in: Federated Learning: Privacy and Incentive, Springer, 2020, pp. 240--254.
+
+\bibitem[Li et al.(2020b)]{Li2020survey}
+T. Li, A.K. Sahu, A. Talwalkar, V. Smith, Federated learning: Challenges, methods, and future directions, IEEE Signal Processing Magazine 37 (2020) 50--60.
+
+\bibitem[Li et al.(2021b)]{Li2021moon}
+Q. Li, B. He, D. Song, Model-contrastive federated learning, in: Proc. CVPR, 2021, pp. 10713--10722.
+
+\bibitem[Fallah et al.(2020)]{Fallah2020}
+A. Fallah, A. Mokhtari, A. Ozdaglar, Personalized federated learning with theoretical guarantees: A model-agnostic meta-learning approach, in: Proc. NeurIPS, 2020, pp. 3557--3568.
+
+\bibitem[Foret et al.(2021)]{Foret2021}
+P. Foret, A. Kleiner, H. Mobahi, B. Neyshabur, Sharpness-aware minimization for efficiently improving generalization, in: Proc. ICLR, 2021.
+
+\bibitem[Martens and Grosse(2015)]{Martens2015}
+J. Martens, R. Grosse, Optimizing neural networks with Kronecker-factored approximate curvature, in: Proc. ICML, 2015, pp. 2408--2417.
+
+\bibitem[Acar et al.(2021)]{Acar2021}
+D.A.E. Acar, Y. Zhao, R.M. Navarro, M. Mattina, P.N. Whatmough, V. Saber, Federated learning based on dynamic regularization, in: Proc. ICLR, 2021.
+
+\bibitem[Wang et al.(2020)]{Wang2020fednova}
+J. Wang, Q. Liu, H. Liang, G. Joshi, H.V. Poor, Tackling the objective inconsistency problem in heterogeneous federated optimization, in: Proc. NeurIPS, 2020, pp. 7611--7623.
+
+\bibitem[Reddi et al.(2021)]{Reddi2021}
+S. Reddi, Z. Charles, M. Zaheer, Z. Garrett, K. Rush, J. Kone\v{c}n\'{y}, S. Kumar, H.B. McMahan, Adaptive federated optimization, in: Proc. ICLR, 2021.
+
+\bibitem[Hutchinson(1990)]{Hutchinson1990}
+M.F. Hutchinson, A stochastic estimator of the trace of the influence matrix for Laplacian smoothing splines, Communications in Statistics - Simulation and Computation 19 (1990) 433--450.
+
+\bibitem[Zhu et al.(2021)]{Zhu2021}
+Z. Zhu, J. Hong, J. Zhou, Data-free knowledge distillation for heterogeneous federated learning, in: Proc. ICML, 2021, pp. 12878--12889.
+
+\bibitem[Tan et al.(2022)]{Tan2022}
+Y. Tan, G. Long, L. Liu, T. Zhou, Q. Lu, J. Jiang, C. Zhang, FedProto: Federated prototype learning across heterogeneous clients, in: Proc. AAAI, 2022, pp. 8432--8440.
+
+\bibitem[Yeh and Lien(2009)]{Yeh2009}
+I.-C. Yeh, C.-H. Lien, The comparisons of data mining techniques for the predictive accuracy of probability of default of credit card clients, Expert Systems with Applications 36 (2009) 2473--2480.
+
+\end{thebibliography}
+
+\end{document}

@@ -13,8 +13,9 @@ import torch
 import numpy as np
 from datetime import datetime
 
-# 添加路径
-sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# 添加system目录到路径
+script_dir = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, os.path.join(script_dir, 'system'))
 
 from utils.loss_landscape import (
     LossLandscapeAnalyzer, 
